@@ -1,10 +1,54 @@
 #![feature(associated_consts)]
 extern crate image;
+extern crate regex;
 
 use std::io;
 use std::mem;
 
-struct Image{
+struct Vertex {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+struct Model {
+    vertices: Vec<Vertex>,
+    faces: Vec<(usize, usize, usize)>,
+}
+
+impl Model {
+    fn parse(text: &str) -> Model {
+        let mut vertices = Vec::new();
+        let mut faces = Vec::new();
+        let face_re = regex::Regex::new(r"f (\d+)/\d+/\d+ (\d+)/\d+/\d+ (\d+)/\d+/\d+").unwrap();
+        for line in text.lines() {
+            if line.starts_with("v ") {
+                let parts: Vec<&str> = line.split(" ").collect();
+                vertices.push(Vertex {
+                    x: parts[1].parse().unwrap(),
+                    y: parts[2].parse().unwrap(),
+                    z: parts[3].parse().unwrap(),
+                });
+            }
+            else if line.starts_with("f ") {
+                for cap in face_re.captures_iter(line) {
+                    let (f0, f1, f2): (usize, usize, usize) =
+                        (cap.at(1).unwrap().parse().unwrap(),
+                         cap.at(2).unwrap().parse().unwrap(),
+                         cap.at(3).unwrap().parse().unwrap());
+                    faces.push((f0 - 1, f1 - 1, f2 - 1));
+                }
+            }
+        }
+
+        Model {
+            vertices: vertices,
+            faces: faces,
+        }
+    }
+}
+
+struct Image {
     buf: Vec<u8>,
     width: usize,
     height: usize,
@@ -54,6 +98,19 @@ impl Color {
 }
 
 fn line(image: &mut Image, color: &Color, x0: isize, y0: isize, x1: isize, y1: isize) {
+    if x0 == x1 {
+        let (y0, y1) = if y0 > y1 {
+            (y1, y0)
+        }
+        else {
+            (y0, y1)
+        };
+        for y in y0..y1 + 1 {
+            image.set(x0 as usize, y as usize, color);
+        }
+        return;
+    }
+
     let steep = (x0-x1).abs() < (y0-y1).abs();
     let mut x0 = x0;
     let mut x1 = x1;
@@ -72,7 +129,6 @@ fn line(image: &mut Image, color: &Color, x0: isize, y0: isize, x1: isize, y1: i
     for x in x0..x1 + 1 {
         let t = (x - x0) as f32 / (x1 as f32 - x0 as f32);
         let y = ((y0 as f32) * (1.0 - t) + (y1 as f32) * t) as isize;
-
         if steep {
             image.set(y as usize, x as usize, color);
         }
@@ -83,8 +139,31 @@ fn line(image: &mut Image, color: &Color, x0: isize, y0: isize, x1: isize, y1: i
 }
 
 fn main() {
-    let mut image = Image::new(100, 100);
-    line(&mut image, &Color::RED, 13, 20, 80, 40);
-    line(&mut image, &Color::RED, 20, 13, 40, 80);
-    image.save("test2.png");
+    use std::fs::File;
+    use std::io::prelude::*;
+    use std::path::Path;
+    let path = Path::new("african_head.obj");
+    let mut file = File::open(&path).unwrap();
+    let mut s = String::new();
+    file.read_to_string(&mut s).unwrap();
+
+    let mut image = Image::new(1000, 1000);
+    let model = Model::parse(&s);
+    {
+        let mut draw_line = |v0: &Vertex, v1: &Vertex| {
+            let x0 = 1 + ((v0.x + 1.0) * (image.width - 1) as f32 / 2.0) as isize;
+            let y0 = 1 + ((v0.y + 1.0) * (image.height - 1) as f32 / 2.0) as isize;
+            let x1 = 1 + ((v1.x + 1.0) * (image.width - 1) as f32 / 2.0) as isize;
+            let y1 = 1 + ((v1.y + 1.0) * (image.height - 1) as f32 / 2.0) as isize;
+            line(&mut image, &Color::RED, x0, y0, x1, y1);
+
+        };
+        for face in model.faces {
+            draw_line(&model.vertices[face.0], &model.vertices[face.1]);
+            draw_line(&model.vertices[face.1], &model.vertices[face.2]);
+            draw_line(&model.vertices[face.2], &model.vertices[face.0]);
+        }
+    }
+
+    image.save("test3.png");
 }
