@@ -1,6 +1,7 @@
 #![feature(associated_consts)]
 extern crate image;
 extern crate nalgebra;
+extern crate rand;
 extern crate regex;
 
 mod model;
@@ -8,7 +9,7 @@ mod model;
 use std::io;
 use std::mem;
 
-use nalgebra::Vec3;
+use nalgebra::{cross, Pnt2, Vec2, Vec3};
 
 use model::Model;
 
@@ -61,6 +62,17 @@ impl Color {
     const RED: Color = Color { r: 255, g: 0, b: 0, a: 255 };
 }
 
+impl rand::Rand for Color {
+    fn rand<R: rand::Rng>(rng: &mut R) -> Self {
+        Color::new(
+            rng.gen(),
+            rng.gen(),
+            rng.gen(),
+            255,
+        )
+    }
+}
+
 fn line(image: &mut Image, color: &Color, x0: isize, y0: isize, x1: isize, y1: isize) {
     if x0 == x1 {
         let (y0, y1) = if y0 > y1 {
@@ -102,6 +114,52 @@ fn line(image: &mut Image, color: &Color, x0: isize, y0: isize, x1: isize, y1: i
     }
 }
 
+fn to_barycentric(point: Pnt2<i32>, triangle: &[Pnt2<i32>; 3]) -> Vec3<f32> {
+    let point: Pnt2<f32> = nalgebra::cast(point);
+    let triangle: &[Pnt2<f32>; 3] = &[nalgebra::cast(triangle[0]), nalgebra::cast(triangle[1]), nalgebra::cast(triangle[2])];
+    let u = cross(&Vec3::new(triangle[2].x - triangle[0].x, triangle[1].x - triangle[0].x, triangle[0].x - point.x),
+                  &Vec3::new(triangle[2].y - triangle[0].y, triangle[1].y - triangle[0].y, triangle[0].y - point.y));
+    if u.z.abs() < 1. {
+        // Degenerate triangle; return a result with negative
+        // coordinates so that we discard the point in triangle
+        // rasterization
+        return Vec3::new(-1., 1., 1.);
+    }
+    else {
+        return Vec3::new(1. - (u.x + u.y) / u.z,
+                         u.y / u.z,
+                         u.x / u.z);
+    }
+}
+
+fn triangle(image: &mut Image, color: &Color, triangle: &[Pnt2<i32>; 3]) {
+    let mut bbox_min = Pnt2::new((image.width - 1) as i32, (image.height - 1) as i32);
+    let mut bbox_max = Pnt2::new(0, 0);
+    let bbox_clamp = Pnt2::new((image.width - 1) as i32, (image.height - 1) as i32);
+
+    for point in triangle {
+        for coord in 0..2 {
+            bbox_min[coord] = std::cmp::max(
+                0,
+                std::cmp::min(bbox_min[coord], point[coord]));
+            bbox_max[coord] = std::cmp::min(
+                bbox_clamp[coord],
+                std::cmp::max(bbox_max[coord], point[coord]));
+        }
+    }
+
+    for x in bbox_min.x..bbox_max.x + 1 {
+        for y in bbox_min.y..bbox_max.y + 1 {
+            let p = Pnt2::new(x, y);
+            let bc_screen = to_barycentric(p, triangle);
+            if bc_screen.x < 0. || bc_screen.y < 0. || bc_screen.z < 0. {
+                continue;
+            }
+            image.set(p.x as usize, p.y as usize, color);
+        }
+    }
+}
+
 fn main() {
     use std::fs::File;
     use std::io::prelude::*;
@@ -111,21 +169,21 @@ fn main() {
     let mut s = String::new();
     file.read_to_string(&mut s).unwrap();
 
-    let mut image = Image::new(1000, 1000);
+    let width = 1000;
+    let height = 1000;
+    let mut image = Image::new(width, height);
+    let convert_coord = |v: &Vec3<f32>| {
+        Pnt2::new(1 + ((v.x + 1.0) * ((width - 1) as f32) / 2.0) as i32,
+                  1 + ((v.y + 1.0) * ((height - 1) as f32) / 2.0) as i32)
+    };
     let model = Model::parse(&s);
     {
-        let mut draw_line = |v0: &Vec3<f32>, v1: &Vec3<f32>| {
-            let x0 = 1 + ((v0.x + 1.0) * (image.width - 1) as f32 / 2.0) as isize;
-            let y0 = 1 + ((v0.y + 1.0) * (image.height - 1) as f32 / 2.0) as isize;
-            let x1 = 1 + ((v1.x + 1.0) * (image.width - 1) as f32 / 2.0) as isize;
-            let y1 = 1 + ((v1.y + 1.0) * (image.height - 1) as f32 / 2.0) as isize;
-            line(&mut image, &Color::RED, x0, y0, x1, y1);
-
-        };
         for face in model.faces {
-            draw_line(&model.vertices[face.0], &model.vertices[face.1]);
-            draw_line(&model.vertices[face.1], &model.vertices[face.2]);
-            draw_line(&model.vertices[face.2], &model.vertices[face.0]);
+            triangle(&mut image, &rand::random(), &[
+                convert_coord(&model.vertices[face.0]),
+                convert_coord(&model.vertices[face.1]),
+                convert_coord(&model.vertices[face.2]),
+            ]);
         }
     }
 
