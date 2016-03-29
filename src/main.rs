@@ -9,7 +9,7 @@ mod model;
 use std::io;
 use std::mem;
 
-use nalgebra::{cross, Pnt2, Vec2, Vec3};
+use nalgebra::{cross, Pnt2, Pnt3, Vec3};
 
 use model::Model;
 
@@ -18,6 +18,8 @@ struct Image {
     width: usize,
     height: usize,
 }
+
+type ZBuffer = [f32];
 
 impl Image {
     fn new(width: usize, height: usize) -> Image {
@@ -114,9 +116,7 @@ fn line(image: &mut Image, color: &Color, x0: isize, y0: isize, x1: isize, y1: i
     }
 }
 
-fn to_barycentric(point: Pnt2<i32>, triangle: &[Pnt2<i32>; 3]) -> Vec3<f32> {
-    let point: Pnt2<f32> = nalgebra::cast(point);
-    let triangle: &[Pnt2<f32>; 3] = &[nalgebra::cast(triangle[0]), nalgebra::cast(triangle[1]), nalgebra::cast(triangle[2])];
+fn to_barycentric(point: Pnt3<f32>, triangle: &[Pnt3<f32>; 3]) -> Vec3<f32> {
     let u = cross(&Vec3::new(triangle[2].x - triangle[0].x, triangle[1].x - triangle[0].x, triangle[0].x - point.x),
                   &Vec3::new(triangle[2].y - triangle[0].y, triangle[1].y - triangle[0].y, triangle[0].y - point.y));
     if u.z.abs() < 1. {
@@ -132,30 +132,37 @@ fn to_barycentric(point: Pnt2<i32>, triangle: &[Pnt2<i32>; 3]) -> Vec3<f32> {
     }
 }
 
-fn triangle(image: &mut Image, color: &Color, triangle: &[Pnt2<i32>; 3]) {
-    let mut bbox_min = Pnt2::new((image.width - 1) as i32, (image.height - 1) as i32);
-    let mut bbox_max = Pnt2::new(0, 0);
-    let bbox_clamp = Pnt2::new((image.width - 1) as i32, (image.height - 1) as i32);
+fn triangle(image: &mut Image, color: &Color, zbuffer: &mut ZBuffer, triangle: &[Pnt3<f32>; 3]) {
+    let mut bbox_min = Pnt2::new(std::f32::MAX, std::f32::MAX);
+    let mut bbox_max = Pnt2::new(std::f32::MAX, std::f32::MAX);
+    let bbox_clamp = Pnt2::new((image.width - 1) as f32, (image.height - 1) as f32);
 
     for point in triangle {
         for coord in 0..2 {
-            bbox_min[coord] = std::cmp::max(
-                0,
-                std::cmp::min(bbox_min[coord], point[coord]));
-            bbox_max[coord] = std::cmp::min(
+            bbox_min[coord] = f32::max(
+                0.,
+                f32::min(bbox_min[coord], point[coord]));
+            bbox_max[coord] = f32::min(
                 bbox_clamp[coord],
-                std::cmp::max(bbox_max[coord], point[coord]));
+                f32::max(bbox_max[coord], point[coord]));
         }
     }
 
-    for x in bbox_min.x..bbox_max.x + 1 {
-        for y in bbox_min.y..bbox_max.y + 1 {
-            let p = Pnt2::new(x, y);
+    for x in (bbox_min.x as i32)..(bbox_max.x as i32) + 1 {
+        for y in (bbox_min.y as i32)..(bbox_max.y as i32) + 1 {
+            let mut p: Pnt3<f32> = Pnt3::new(x as f32, y as f32, 0.);
             let bc_screen = to_barycentric(p, triangle);
             if bc_screen.x < 0. || bc_screen.y < 0. || bc_screen.z < 0. {
                 continue;
             }
-            image.set(p.x as usize, p.y as usize, color);
+            p.z = triangle[0].z * bc_screen[0] +
+                triangle[1].z * bc_screen[1] +
+                triangle[2].z + bc_screen[2];
+            let zbuf_idx = (p.x + p.y * image.width as f32) as usize;
+            if zbuffer[zbuf_idx] < p.z {
+                zbuffer[zbuf_idx] = p.z;
+                image.set(p.x as usize, p.y as usize, color);
+            }
         }
     }
 }
@@ -173,13 +180,15 @@ fn main() {
     let height = 1000;
     let mut image = Image::new(width, height);
     let convert_coord = |v: &Vec3<f32>| {
-        Pnt2::new(1 + ((v.x + 1.0) * ((width - 1) as f32) / 2.0) as i32,
-                  1 + ((v.y + 1.0) * ((height - 1) as f32) / 2.0) as i32)
+        Pnt3::new(1. + ((v.x + 1.0) * ((width - 1) as f32) / 2.0),
+                  1. + ((v.y + 1.0) * ((height - 1) as f32) / 2.0),
+                  v.z)
     };
+    let mut zbuffer = vec![0.0; width * height];
     let model = Model::parse(&s);
     {
         for face in model.faces {
-            triangle(&mut image, &rand::random(), &[
+            triangle(&mut image, &rand::random(), &mut zbuffer, &[
                 convert_coord(&model.vertices[face.0]),
                 convert_coord(&model.vertices[face.1]),
                 convert_coord(&model.vertices[face.2]),
