@@ -1,52 +1,16 @@
 #![feature(associated_consts)]
 extern crate image;
+extern crate nalgebra;
 extern crate regex;
+
+mod model;
 
 use std::io;
 use std::mem;
 
-struct Vertex {
-    x: f32,
-    y: f32,
-    z: f32,
-}
+use nalgebra::Vec3;
 
-struct Model {
-    vertices: Vec<Vertex>,
-    faces: Vec<(usize, usize, usize)>,
-}
-
-impl Model {
-    fn parse(text: &str) -> Model {
-        let mut vertices = Vec::new();
-        let mut faces = Vec::new();
-        let face_re = regex::Regex::new(r"f (\d+)/\d+/\d+ (\d+)/\d+/\d+ (\d+)/\d+/\d+").unwrap();
-        for line in text.lines() {
-            if line.starts_with("v ") {
-                let parts: Vec<&str> = line.split(" ").collect();
-                vertices.push(Vertex {
-                    x: parts[1].parse().unwrap(),
-                    y: parts[2].parse().unwrap(),
-                    z: parts[3].parse().unwrap(),
-                });
-            }
-            else if line.starts_with("f ") {
-                for cap in face_re.captures_iter(line) {
-                    let (f0, f1, f2): (usize, usize, usize) =
-                        (cap.at(1).unwrap().parse().unwrap(),
-                         cap.at(2).unwrap().parse().unwrap(),
-                         cap.at(3).unwrap().parse().unwrap());
-                    faces.push((f0 - 1, f1 - 1, f2 - 1));
-                }
-            }
-        }
-
-        Model {
-            vertices: vertices,
-            faces: faces,
-        }
-    }
-}
+use model::Model;
 
 struct Image {
     buf: Vec<u8>,
@@ -150,7 +114,7 @@ fn main() {
     let mut image = Image::new(1000, 1000);
     let model = Model::parse(&s);
     {
-        let mut draw_line = |v0: &Vertex, v1: &Vertex| {
+        let mut draw_line = |v0: &Vec3<f32>, v1: &Vec3<f32>| {
             let x0 = 1 + ((v0.x + 1.0) * (image.width - 1) as f32 / 2.0) as isize;
             let y0 = 1 + ((v0.y + 1.0) * (image.height - 1) as f32 / 2.0) as isize;
             let x1 = 1 + ((v1.x + 1.0) * (image.width - 1) as f32 / 2.0) as isize;
